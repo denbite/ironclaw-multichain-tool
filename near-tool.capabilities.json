@@ -1,0 +1,35 @@
+{
+  "version": "0.3.0",
+  "wit_version": "0.3.0",
+  "http": {
+    "allowlist": [
+      { "host": "rpc.testnet.near.org",            "path_prefix": "/", "methods": ["POST"] },
+      { "host": "rpc.mainnet.near.org",            "path_prefix": "/", "methods": ["POST"] },
+      { "host": "mempool.space",                   "path_prefix": "/api/",          "methods": ["GET", "POST"] },
+      { "host": "mempool.space",                   "path_prefix": "/testnet4/api/", "methods": ["GET", "POST"] },
+      { "host": "eth.llamarpc.com",                "path_prefix": "/", "methods": ["POST"] },
+      { "host": "cloudflare-eth.com",              "path_prefix": "/", "methods": ["POST"] },
+      { "host": "rpc.ankr.com",                    "path_prefix": "/", "methods": ["POST"] },
+      { "host": "mainnet.base.org",                "path_prefix": "/", "methods": ["POST"] },
+      { "host": "arb1.arbitrum.io",                "path_prefix": "/", "methods": ["POST"] },
+      { "host": "mainnet.optimism.io",             "path_prefix": "/", "methods": ["POST"] },
+      { "host": "sepolia.drpc.org",                "path_prefix": "/", "methods": ["POST"] },
+      { "host": "ethereum-sepolia.publicnode.com", "path_prefix": "/", "methods": ["POST"] },
+      { "host": "mainnet.infura.io",               "path_prefix": "/", "methods": ["POST"] },
+      { "host": "api.mainnet-beta.solana.com",     "path_prefix": "/", "methods": ["POST"] },
+      { "host": "api.devnet.solana.com",           "path_prefix": "/", "methods": ["POST"] }
+    ],
+    "rate_limit": {
+      "requests_per_minute": 60,
+      "requests_per_hour": 500
+    },
+    "timeout_secs": 30
+  },
+  "discovery_summary": {
+    "always_required": ["action"],
+    "notes": [
+      "Use tool_info(name: \"near\", detail: \"schema\") for the full action schema before guessing fields.",
+      "Actions: get_derived_pubkey, get_btc_utxos, build_evm_payload, build_btc_payload, reconstruct_evm_tx, broadcast_evm, reconstruct_btc_tx, broadcast_btc"
+    ]
+  }
+}
