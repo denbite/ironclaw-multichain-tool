@@ -1,6 +1,6 @@
 ---
 name: near-mpc
-version: 0.4.1
+version: 0.5.2
 description: Sign and broadcast EVM, Bitcoin, and Solana transactions using NEAR's MPC chain-signatures contract
 activation:
   keywords:
@@ -21,6 +21,8 @@ activation:
   patterns:
     - "transfer.*[Ee][Tt][Hh]"
     - "send.*[Ee][Tt][Hh]"
+    - "transfer.*[Bb][Tt][Cc]"
+    - "send.*[Bb][Tt][Cc]"
     - ".*\\.testnet"
     - "sign.*transaction.*near"
     - "broadcast.*evm"
@@ -117,10 +119,9 @@ Show the user their address and confirm they have funded it before
 proceeding. Pick the field matching the destination chain:
 
 - EVM → `evm_address`
-- Bitcoin → `btc_address_mainnet` / `btc_address_testnet`
+- Bitcoin → `btc_address_mainnet` / `btc_address_testnet` (use as `from` in BTC build action)
 - Solana → `solana_address`
-- Bitcoin (also) → `pubkey_near` (needed by the BTC build/reconstruct
-  actions).
+- Bitcoin (attach) → `pubkey_near` (still needed by `btc_attach_mpc_signature_to_tx`).
 
 ### 4. NEAR MPC sign command (used by every flow)
 
@@ -132,7 +133,7 @@ depends on the signature scheme.
 
 ```bash
 near contract call-function as-transaction v1.signer-prod.testnet sign \
-  json-args '{"request": {"path":"<PATH>","payload_v2":{"Ecdsa":"<MPC_PAYLOAD>"},"domain_id":0}}' \
+  json-args '{"request": {"path":"<PATH>","payload_v2":{"Ecdsa":"<MPC_PAYLOAD>"},"domain_id":0} }' \
   prepaid-gas '250 Tgas' attached-deposit '1 yoctoNEAR' \
   sign-as <NEAR_ACCOUNT> network-config <NEAR_NETWORK> sign-with-keychain send
 ```
@@ -197,7 +198,7 @@ Ask the user for:
 **Supported `chain_id` values:**
 
 | Network          | `chain_id` |
-|------------------|------------|
+| ---------------- | ---------- |
 | Ethereum mainnet | `1`        |
 | Optimism         | `10`       |
 | Base             | `8453`     |
@@ -243,10 +244,7 @@ Argument encoding rules:
 {
   "action": "evm_encode_data",
   "abi": "transfer(address,uint256)",
-  "args": [
-    "0xAb5801a7D398351b8bE11C439e05C5B3259aec9B",
-    "1000000000000000000"
-  ]
+  "args": ["0xAb5801a7D398351b8bE11C439e05C5B3259aec9B", "1000000000000000000"]
 }
 ```
 
@@ -445,7 +443,9 @@ response.
 **Output:**
 
 ```json
-{ "tx_hash": "0xaf4af02ffc7bbc2748df93fc104bba3ca65887b48c4edff6f3634351ad946d5a" }
+{
+  "tx_hash": "0xaf4af02ffc7bbc2748df93fc104bba3ca65887b48c4edff6f3634351ad946d5a"
+}
 ```
 
 ### 12. Confirm
@@ -457,29 +457,112 @@ matching block-explorer link from the table at the bottom of this skill.
 
 ## Bitcoin Flow
 
-### 1. Gather Bitcoin transaction parameters
+### 1. Gather parameters
 
 Ask the user for:
 
 - `network` — `mainnet` or `testnet`
 - `outputs` — recipient(s) only: `address` + `amount_sats`. Do **not**
   include a change output.
+- Optionally: BTC decimal amount (e.g. `"0.001 BTC"`) if the user hasn't
+  specified `amount_sats` yet.
 
-The tool automatically fetches the largest UTXO for the derived address
-from Esplora, fetches the fee rate, and computes change. No UTXO
-details needed from the user.
+### 2. `btc_parse_value` — convert decimal BTC to sats (if needed)
 
-### 2. `build_btc_payload` — build unsigned tx + sighash payload
+**Input:**
+
+```json
+{ "action": "btc_parse_value", "btc": "0.001" }
+```
+
+**Output:**
+
+```json
+{ "sats": 100000 }
+```
+
+### 3. `btc_get_utxos` — fetch all UTXOs for the sender address
 
 **Input:**
 
 ```json
 {
-  "action": "build_btc_payload",
+  "action": "btc_get_utxos",
   "network": "testnet",
+  "address": "tb1q..."
+}
+```
+
+**Output:**
+
+```json
+{
+  "utxos": [
+    { "txid": "...", "vout": 0, "amount_sats": 150000, "confirmed": true }
+  ]
+}
+```
+
+### 4. `btc_get_fee_rate` — fetch current fee rate
+
+**Input:**
+
+```json
+{ "action": "btc_get_fee_rate", "network": "testnet" }
+```
+
+**Output:**
+
+```json
+{ "fee_rate_sat_vbyte": 2 }
+```
+
+### 5. `btc_build_transfer_mpc_payload` — build unsigned tx + one sighash per input
+
+**Input:**
+
+```json
+{
+  "action": "btc_build_transfer_mpc_payload",
+  "network": "testnet",
+  "from": "tb1q...",
+  "inputs": [{ "txid": "...", "vout": 0, "amount_sats": 150000 }],
+  "outputs": [{ "address": "tb1q...", "amount_sats": 100000 }],
+  "fee_rate_sat_vbyte": 2
+}
+```
+
+**Output:**
+
+```json
+{
+  "tx": "<bare hex unsigned tx>",
+  "mpc_payloads": ["<hash1>", "<hash2>"]
+}
+```
+
+`mpc_payloads` has one entry per input — sign each separately via MPC.
+
+### 6. NEAR MPC sign — repeat once per entry in `mpc_payloads`
+
+For each payload in `mpc_payloads`, run the secp256k1 (`Ecdsa`,
+`domain_id=0`) command from Common §4 with `<MPC_PAYLOAD>` = that entry.
+
+Collect all `SignatureResponse` JSON objects; **stringify each one** (the
+entire JSON object becomes a single string element in `signatures_json`).
+
+### 7. `btc_attach_mpc_signature_to_tx` — assemble witness for all inputs
+
+**Input:**
+
+```json
+{
+  "action": "btc_attach_mpc_signature_to_tx",
+  "network": "testnet",
+  "tx": "<bare hex from step 5>",
   "pubkey_near": "secp256k1:3S3g3cgFXSos7YEEr3Z4EttPRFkrxUJsyYV4Ge5HwdMyMo8ur6D3TUxy2QDtD6grFbcLS55V9sXVhg3NDQ6xV8ss",
-  "outputs": [
-    { "address": "tb1q...", "amount_sats": 50000 }
+  "signatures_json": [
+    "{\"scheme\":\"Secp256k1\",\"big_r\":{...},\"s\":{...},\"recovery_id\":0}"
   ]
 }
 ```
@@ -488,64 +571,30 @@ details needed from the user.
 
 ```json
 {
-  "unsigned_tx_hex": "<hex>",
-  "payload_hex": "<32-byte hex sighash>",
-  "fee_rate_sat_vbyte": 2,
-  "fee_sats": 282,
-  "change_sats": 49718
+  "signed_tx": "<bare hex>",
+  "tx_hash": "<bare hex txid>"
 }
 ```
 
-Show the user `fee_rate_sat_vbyte`, `fee_sats`, and `change_sats` before
-proceeding. Save `payload_hex` and `unsigned_tx_hex` for the next steps.
-
-### 3. NEAR MPC sign
-
-Run the secp256k1 (`Ecdsa`, `domain_id=0`) command from Common §4 with
-`<MPC_PAYLOAD>` = the `payload_hex` from step 2.
-
-### 4. `reconstruct_btc_tx` — produce signed tx + tx_hash
+### 8. `btc_send_signed_tx` — broadcast
 
 **Input:**
 
 ```json
 {
-  "action": "reconstruct_btc_tx",
+  "action": "btc_send_signed_tx",
   "network": "testnet",
-  "unsigned_tx_hex": "<from step 2>",
-  "pubkey_near": "secp256k1:3S3g3cgFXSos7YEEr3Z4EttPRFkrxUJsyYV4Ge5HwdMyMo8ur6D3TUxy2QDtD6grFbcLS55V9sXVhg3NDQ6xV8ss",
-  "signature_json": "{\"scheme\":\"Secp256k1\",\"big_r\":{...},\"s\":{...},\"recovery_id\":0}"
+  "signed_tx": "<bare hex from step 7>"
 }
 ```
 
 **Output:**
 
 ```json
-{
-  "signed_tx_hex": "<hex>",
-  "tx_hash": "<txid hex>"
-}
+{ "tx_hash": "<bare hex txid>" }
 ```
 
-### 5. `broadcast_btc` — submit to Esplora
-
-**Input:**
-
-```json
-{
-  "action": "broadcast_btc",
-  "network": "testnet",
-  "signed_tx_hex": "<from step 4>"
-}
-```
-
-**Output:**
-
-```json
-{ "tx_hash": "<txid hex>" }
-```
-
-### 6. Confirm
+### 9. Confirm
 
 Show the user the `tx_hash` with the matching block-explorer link.
 
