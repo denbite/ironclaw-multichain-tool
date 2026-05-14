@@ -153,9 +153,19 @@ const SCHEMA: &str = r#"{
     },
     {
       "type": "object",
-      "description": "Fetch all UTXOs (unspent transaction outputs) for a Bitcoin address from Blockstream Esplora. Useful for inspecting balances; build_btc_payload auto-fetches UTXOs so this step is optional in the normal signing flow.",
+      "description": "Bitcoin: convert a decimal BTC string (e.g. '0.001') to integer satoshis. Pure computation.",
       "properties": {
-        "action": { "type": "string", "const": "get_btc_utxos" },
+        "action": { "type": "string", "const": "btc_parse_value" },
+        "btc": { "type": "string", "description": "Decimal BTC amount, e.g. '0.001'" }
+      },
+      "required": ["action", "btc"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Bitcoin: fetch all UTXOs for a Bitcoin address from mempool.space. Run this before btc_build_transfer_mpc_payload to get the inputs list.",
+      "properties": {
+        "action": { "type": "string", "const": "btc_get_utxos" },
         "network": { "type": "string", "enum": ["mainnet", "testnet"] },
         "address": { "type": "string", "description": "Bitcoin address (bech32 P2WPKH, e.g. tb1q... or bc1q...)" }
       },
@@ -164,23 +174,34 @@ const SCHEMA: &str = r#"{
     },
     {
       "type": "object",
-      "description": "Build a P2WPKH Bitcoin unsigned transaction and return the BIP143 sighash payload to be signed by the MPC contract. v1: exactly 1 input. UTXOs, fee rate, and change are all handled automatically — only network, pubkey_near, and outputs are required. The tool fetches the largest UTXO for the derived address from Esplora; supply 'inputs' only to override the auto-selected UTXO.",
+      "description": "Bitcoin: fetch the recommended fee rate (sat/vbyte) from mempool.space. Use the result as fee_rate_sat_vbyte in btc_build_transfer_mpc_payload.",
       "properties": {
-        "action": { "type": "string", "const": "build_btc_payload" },
+        "action": { "type": "string", "const": "btc_get_fee_rate" },
+        "network": { "type": "string", "enum": ["mainnet", "testnet"] }
+      },
+      "required": ["action", "network"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Bitcoin: build a P2WPKH unsigned tx and one BIP143 sighash per input. Pure — fee_rate and UTXOs must be pre-fetched. All inputs are spent; agent supplies the full list from btc_get_utxos. Returns tx (bare hex) and mpc_payloads (one bare-hex hash per input to sign via MPC).",
+      "properties": {
+        "action": { "type": "string", "const": "btc_build_transfer_mpc_payload" },
         "network": { "type": "string", "enum": ["mainnet", "testnet"] },
-        "pubkey_near": { "type": "string", "description": "secp256k1:<base58> key returned by get_derived_pubkey" },
+        "from": { "type": "string", "description": "Sender's P2WPKH address (bech32, e.g. tb1q... or bc1q...) from get_derived_pubkey" },
         "inputs": {
           "type": "array",
-          "maxItems": 1,
-          "description": "Optional: exactly 1 UTXO to spend. If omitted, the largest UTXO for the derived address is fetched automatically from Esplora.",
+          "minItems": 1,
+          "description": "All UTXOs to spend (from btc_get_utxos). Each input produces one entry in mpc_payloads.",
           "items": {
             "type": "object",
             "properties": {
-              "txid": { "type": "string", "description": "UTXO transaction ID (hex, big-endian)" },
+              "txid": { "type": "string", "description": "UTXO transaction ID (bare hex, big-endian)" },
               "vout": { "type": "integer" },
               "amount_sats": { "type": "integer" }
             },
-            "required": ["txid", "vout", "amount_sats"]
+            "required": ["txid", "vout", "amount_sats"],
+            "additionalProperties": false
           }
         },
         "outputs": {
@@ -193,36 +214,43 @@ const SCHEMA: &str = r#"{
               "address": { "type": "string" },
               "amount_sats": { "type": "integer" }
             },
-            "required": ["address", "amount_sats"]
+            "required": ["address", "amount_sats"],
+            "additionalProperties": false
           }
         },
-        "change_address": { "type": "string", "description": "Optional: where to return the change. Defaults to the P2WPKH address derived from pubkey_near." }
+        "change_address": { "type": "string", "description": "Optional: where to return change. Defaults to `from`." },
+        "fee_rate_sat_vbyte": { "type": "integer", "description": "Fee rate in sat/vbyte from btc_get_fee_rate." }
       },
-      "required": ["action", "network", "pubkey_near", "outputs"],
+      "required": ["action", "network", "from", "inputs", "outputs", "fee_rate_sat_vbyte"],
       "additionalProperties": false
     },
     {
       "type": "object",
-      "description": "Reconstruct a signed P2WPKH segwit transaction from the MPC signature. Returns signed_tx_hex and tx_hash without broadcasting. Use broadcast_btc to send it to the network.",
+      "description": "Bitcoin: attach MPC signatures to an unsigned P2WPKH tx to produce a signed segwit transaction. Pure. One signature per input, in the same order as mpc_payloads from btc_build_transfer_mpc_payload.",
       "properties": {
-        "action": { "type": "string", "const": "reconstruct_btc_tx" },
+        "action": { "type": "string", "const": "btc_attach_mpc_signature_to_tx" },
         "network": { "type": "string", "enum": ["mainnet", "testnet"] },
-        "unsigned_tx_hex": { "type": "string", "description": "unsigned_tx_hex returned by build_btc_payload" },
+        "tx": { "type": "string", "description": "Bare hex unsigned tx from btc_build_transfer_mpc_payload" },
         "pubkey_near": { "type": "string", "description": "secp256k1:<base58> key returned by get_derived_pubkey" },
-        "signature_json": { "type": "string", "description": "Full SignatureResponse JSON from the MPC contract" }
+        "signatures_json": {
+          "type": "array",
+          "minItems": 1,
+          "description": "One SignatureResponse JSON string per input, same order as mpc_payloads. Must be strict JSON strings.",
+          "items": { "type": "string" }
+        }
       },
-      "required": ["action", "network", "unsigned_tx_hex", "pubkey_near", "signature_json"],
+      "required": ["action", "network", "tx", "pubkey_near", "signatures_json"],
       "additionalProperties": false
     },
     {
       "type": "object",
-      "description": "Broadcast a signed Bitcoin segwit transaction (from reconstruct_btc_tx) via Blockstream Esplora.",
+      "description": "Bitcoin: broadcast a signed segwit transaction via mempool.space.",
       "properties": {
-        "action": { "type": "string", "const": "broadcast_btc" },
+        "action": { "type": "string", "const": "btc_send_signed_tx" },
         "network": { "type": "string", "enum": ["mainnet", "testnet"] },
-        "signed_tx_hex": { "type": "string", "description": "signed_tx_hex returned by reconstruct_btc_tx" }
+        "signed_tx": { "type": "string", "description": "Bare hex signed tx from btc_attach_mpc_signature_to_tx" }
       },
-      "required": ["action", "network", "signed_tx_hex"],
+      "required": ["action", "network", "signed_tx"],
       "additionalProperties": false
     },
     {
@@ -264,8 +292,7 @@ const SCHEMA: &str = r#"{
 }"#;
 
 const DESCRIPTION: &str = "\
-NEAR MPC cross-chain signing tool. EVM chains expose a granular per-step API; \
-Bitcoin and Solana use bundled actions. Available actions:\n\
+NEAR MPC cross-chain signing tool. Available actions:\n\
 - get_derived_pubkey: derive secp256k1 (EVM/BTC) and ed25519 (Solana) addresses for a (NEAR account, path) pair\n\
 - evm_parse_value: convert decimal-ETH string to 0x-prefixed hex wei (pure)\n\
 - evm_encode_data: encode an ABI function call to 0x-prefixed hex calldata (pure)\n\
@@ -273,14 +300,16 @@ Bitcoin and Solana use bundled actions. Available actions:\n\
 - evm_get_gas_price: fetch eth_gasPrice as 0x-prefixed hex wei\n\
 - evm_get_priority_fee_wei_per_gas: fetch eth_maxPriorityFeePerGas + derive max_fee_per_gas\n\
 - evm_estimate_gas: run eth_estimateGas with a 20% buffer\n\
-- evm_build_transfer_mpc_payload: build unsigned EIP-1559 ETH transfer; pure (takes all fees as inputs); returns tx + raw mpc_payload\n\
+- evm_build_transfer_mpc_payload: build unsigned EIP-1559 ETH transfer; pure; returns tx + mpc_payload\n\
 - evm_build_function_call_mpc_payload: as above but with calldata\n\
-- evm_attach_mpc_signature_to_tx: combine unsigned tx + MPC signature into signed_tx + tx_hash (pure)\n\
-- evm_send_signed_tx: submit signed tx via eth_sendRawTransaction\n\
-- get_btc_utxos: inspect UTXOs for a Bitcoin address (optional — build_btc_payload auto-fetches)\n\
-- build_btc_payload: build a P2WPKH unsigned tx; auto-fetches UTXOs and change address from pubkey_near\n\
-- reconstruct_btc_tx: combine unsigned Bitcoin tx + MPC signature → signed_tx_hex + tx_hash (no broadcast)\n\
-- broadcast_btc: submit a signed Bitcoin segwit tx to Esplora\n\
+- evm_attach_mpc_signature_to_tx: combine unsigned EVM tx + MPC signature → signed_tx + tx_hash (pure)\n\
+- evm_send_signed_tx: submit signed EVM tx via eth_sendRawTransaction\n\
+- btc_parse_value: convert decimal BTC string to integer satoshis (pure)\n\
+- btc_get_utxos: fetch all UTXOs for a Bitcoin address from mempool.space\n\
+- btc_get_fee_rate: fetch current sat/vbyte fee rate from mempool.space\n\
+- btc_build_transfer_mpc_payload: build unsigned P2WPKH tx; pure (takes UTXOs + fee_rate as inputs); returns tx + one mpc_payload per input\n\
+- btc_attach_mpc_signature_to_tx: combine unsigned Bitcoin tx + MPC signatures → signed_tx + tx_hash (pure)\n\
+- btc_send_signed_tx: broadcast signed Bitcoin segwit tx via mempool.space\n\
 - build_sol_payload: build a Solana v0 transaction message for a native SOL transfer; auto-fetches recent blockhash and priority fee; network: mainnet or devnet; accepts to + amount_sol\n\
 - reconstruct_sol_tx: combine unsigned Solana tx + MPC ed25519 signature → signed_tx_base64 + tx_hash (no broadcast)\n\
 - broadcast_sol: submit a signed Solana tx via sendTransaction; network: mainnet or devnet\
@@ -306,10 +335,12 @@ enum ActionInput {
     EvmSendSignedTx(evm::SendSignedTxInput),
 
     // Bitcoin
-    GetBtcUtxos(bitcoin::GetBtcUtxosInput),
-    BuildBtcPayload(bitcoin::BuildBtcPayloadInput),
-    ReconstructBtcTx(bitcoin::ReconstructBtcInput),
-    BroadcastBtc(bitcoin::BroadcastBtcInput),
+    BtcParseValue(bitcoin::ParseValueInput),
+    BtcGetUtxos(bitcoin::GetUtxosInput),
+    BtcGetFeeRate(bitcoin::GetFeeRateInput),
+    BtcBuildTransferMpcPayload(bitcoin::BuildTransferInput),
+    BtcAttachMpcSignatureToTx(bitcoin::AttachSignatureInput),
+    BtcSendSignedTx(bitcoin::SendSignedTxInput),
 
     // Solana
     BuildSolPayload(solana::BuildSolPayloadInput),
@@ -386,20 +417,28 @@ fn execute_inner(params: &str) -> Result<String, String> {
         }
 
         // ── Bitcoin ──────────────────────────────────────────────────────────
-        ActionInput::GetBtcUtxos(inp) => {
-            let out = bitcoin::get_btc_utxos(&inp, do_http)?;
+        ActionInput::BtcParseValue(inp) => {
+            let out = bitcoin::parse_value(&inp)?;
             serde_json::to_string(&out).map_err(|e| e.to_string())
         }
-        ActionInput::BuildBtcPayload(inp) => {
-            let out = bitcoin::build_btc_payload(&inp, do_http)?;
+        ActionInput::BtcGetUtxos(inp) => {
+            let out = bitcoin::get_utxos(&inp, do_http)?;
             serde_json::to_string(&out).map_err(|e| e.to_string())
         }
-        ActionInput::ReconstructBtcTx(inp) => {
-            let out = bitcoin::reconstruct_btc_tx(&inp)?;
+        ActionInput::BtcGetFeeRate(inp) => {
+            let out = bitcoin::get_fee_rate(&inp, do_http)?;
             serde_json::to_string(&out).map_err(|e| e.to_string())
         }
-        ActionInput::BroadcastBtc(inp) => {
-            let out = bitcoin::broadcast_btc(&inp, do_http)?;
+        ActionInput::BtcBuildTransferMpcPayload(inp) => {
+            let out = bitcoin::build_transfer_mpc_payload(&inp)?;
+            serde_json::to_string(&out).map_err(|e| e.to_string())
+        }
+        ActionInput::BtcAttachMpcSignatureToTx(inp) => {
+            let out = bitcoin::attach_mpc_signature_to_tx(&inp)?;
+            serde_json::to_string(&out).map_err(|e| e.to_string())
+        }
+        ActionInput::BtcSendSignedTx(inp) => {
+            let out = bitcoin::send_signed_tx(&inp, do_http)?;
             serde_json::to_string(&out).map_err(|e| e.to_string())
         }
 

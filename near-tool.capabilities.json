@@ -29,7 +29,7 @@
     "always_required": ["action"],
     "notes": [
       "Use tool_info(name: \"near\", detail: \"schema\") for the full action schema before guessing fields.",
-      "Actions: get_derived_pubkey, get_btc_utxos, build_evm_payload, build_btc_payload, reconstruct_evm_tx, broadcast_evm, reconstruct_btc_tx, broadcast_btc"
+      "Actions: get_derived_pubkey, btc_parse_value, btc_get_utxos, btc_get_fee_rate, btc_build_transfer_mpc_payload, btc_attach_mpc_signature_to_tx, btc_send_signed_tx, evm_parse_value, evm_encode_data, evm_get_nonce, evm_get_gas_price, evm_get_priority_fee_wei_per_gas, evm_estimate_gas, evm_build_transfer_mpc_payload, evm_build_function_call_mpc_payload, evm_attach_mpc_signature_to_tx, evm_send_signed_tx, build_sol_payload, reconstruct_sol_tx, broadcast_sol"
     ]
   }
 }
