@@ -1,6 +1,6 @@
 ---
 name: near-mpc
-version: 0.4.1
+version: 0.5.0
 description: Sign and broadcast EVM, Bitcoin, and Solana transactions using NEAR's MPC chain-signatures contract
 activation:
   keywords:
@@ -62,9 +62,8 @@ The agent orchestrates the following at a high level:
 4. Attach the MPC signature to produce the broadcast-ready signed tx
 5. Broadcast the signed tx to the destination chain
 
-EVM exposes a granular per-step API (one action per RPC call); Bitcoin and
-Solana use bundled actions today. A future refactor will give them the
-same granularity.
+EVM and Solana expose a granular per-step API (one action per RPC call);
+Bitcoin uses bundled actions.
 
 ---
 
@@ -558,20 +557,67 @@ Show the user the `tx_hash` with the matching block-explorer link.
 Ask the user for:
 
 - `network` — `mainnet` or `devnet`
-- `to` — recipient Solana address (base58)
-- `amount_sol` — amount in SOL as a decimal number (e.g. `0.5`, `0.001`)
+- `to_pubkey` — recipient Solana address (base58)
+- `amount_sol` — amount as a decimal string (e.g. `"0.5"`, `"0.001"`)
 
-### 2. `build_sol_payload` — build versioned tx message
+### 2. `sol_parse_value` — convert decimal SOL to lamports
+
+**Input:**
+
+```json
+{ "action": "sol_parse_value", "amount_sol": "0.001" }
+```
+
+**Output:**
+
+```json
+{ "lamports": 1000000 }
+```
+
+### 3. `sol_get_recent_blockhash` — fetch latest confirmed blockhash
+
+**Input:**
+
+```json
+{ "action": "sol_get_recent_blockhash", "network": "devnet" }
+```
+
+**Output:**
+
+```json
+{ "recent_blockhash": "<base58 blockhash>" }
+```
+
+### 4. `sol_get_priority_fee` — fetch current priority fee
+
+**Input:**
+
+```json
+{ "action": "sol_get_priority_fee", "network": "devnet" }
+```
+
+**Output:**
+
+```json
+{ "priority_fee": 5000 }
+```
+
+Returns micro-lamports per compute unit. Minimum floor is 5 000 µL/CU.
+
+### 5. `sol_build_transfer_mpc_payload` — build unsigned v0 message
+
+Pure — takes all pre-fetched network values.
 
 **Input:**
 
 ```json
 {
-  "action": "build_sol_payload",
-  "network": "devnet",
+  "action": "sol_build_transfer_mpc_payload",
   "from_pubkey": "<solana_address from Common §3>",
-  "to": "<recipient base58>",
-  "amount_sol": 0.001
+  "to_pubkey": "<recipient base58>",
+  "lamports": 1000000,
+  "recent_blockhash": "<from step 3>",
+  "priority_fee": 5000
 }
 ```
 
@@ -579,26 +625,27 @@ Ask the user for:
 
 ```json
 {
-  "unsigned_tx_hex": "<hex>",
-  "payload_hex": "<message hex sighash>"
+  "tx": "<base64 of v0 message>",
+  "mpc_payload": "<message hex, no 0x prefix>"
 }
 ```
 
-Save both fields for the next steps.
+`mpc_payload` has **no `0x` prefix** — paste it directly into the
+`near-cli-rs` command. Save both `tx` and `mpc_payload`.
 
-### 3. NEAR MPC sign
+### 6. NEAR MPC sign
 
 Run the ed25519 (`Eddsa`, `domain_id=1`) command from Common §4 with
-`<MPC_PAYLOAD>` = the `payload_hex` from step 2.
+`<MPC_PAYLOAD>` = the `mpc_payload` from step 5.
 
-### 4. `reconstruct_sol_tx` — produce signed tx + tx_hash
+### 7. `sol_attach_mpc_signature_to_tx` — produce signed tx + tx_hash
 
 **Input:**
 
 ```json
 {
-  "action": "reconstruct_sol_tx",
-  "unsigned_tx_hex": "<from step 2>",
+  "action": "sol_attach_mpc_signature_to_tx",
+  "tx": "<base64 tx from step 5>",
   "signature_json": "{\"scheme\":\"Ed25519\",\"signature\":[107,187,...]}"
 }
 ```
@@ -607,20 +654,22 @@ Run the ed25519 (`Eddsa`, `domain_id=1`) command from Common §4 with
 
 ```json
 {
-  "signed_tx_base64": "<base64>",
-  "tx_hash": "<base58 signature>"
+  "signed_tx": "<base64 signed transaction>",
+  "tx_hash": "<base58 signature — Solana tx ID>"
 }
 ```
 
-### 5. `broadcast_sol` — submit via sendTransaction
+`signature_json` MUST be a JSON-encoded string (not a nested object).
+
+### 8. `sol_send_signed_tx` — submit via sendTransaction
 
 **Input:**
 
 ```json
 {
-  "action": "broadcast_sol",
+  "action": "sol_send_signed_tx",
   "network": "devnet",
-  "signed_tx_base64": "<from step 4>"
+  "signed_tx": "<signed_tx from step 7>"
 }
 ```
 
@@ -630,7 +679,7 @@ Run the ed25519 (`Eddsa`, `domain_id=1`) command from Common §4 with
 { "tx_hash": "<base58 signature>" }
 ```
 
-### 6. Confirm
+### 9. Confirm
 
 Show the user the `tx_hash` with the matching explorer link below.
 

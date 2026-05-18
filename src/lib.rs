@@ -227,37 +227,68 @@ const SCHEMA: &str = r#"{
     },
     {
       "type": "object",
-      "description": "Build a Solana versioned (v0) transaction message for a native SOL transfer and return the serialised bytes as payload_hex, ready to be sent to the NEAR MPC contract with domain_id=1. Automatically fetches the recent blockhash and priority fee. Supported networks: mainnet (api.mainnet-beta.solana.com), devnet (api.devnet.solana.com). The from_pubkey (MPC-derived Solana address) is the fee payer and the only signer.",
+      "description": "Solana: parse a decimal-SOL string (e.g. '0.001') into lamports (u64). Pure computation. Up to 9 fractional digits supported (1-lamport precision).",
       "properties": {
-        "action": { "type": "string", "const": "build_sol_payload" },
-        "network": { "type": "string", "enum": ["mainnet", "devnet"] },
-        "from_pubkey": { "type": "string", "description": "Base58 Solana address from get_derived_pubkey (solana_address field)" },
-        "to": { "type": "string", "description": "Recipient Base58 Solana address" },
-        "amount_sol": { "type": "number", "description": "Amount of SOL to transfer as a decimal number (e.g. 0.001, 0.5, 1.0)" }
+        "action": { "type": "string", "const": "sol_parse_value" },
+        "amount_sol": { "type": "string" }
       },
-      "required": ["action", "network", "from_pubkey", "to", "amount_sol"],
+      "required": ["action", "amount_sol"],
       "additionalProperties": false
     },
     {
       "type": "object",
-      "description": "Reconstruct a signed Solana versioned transaction from the MPC ed25519 signature. Returns signed_tx_base64 (ready for broadcast_sol) and tx_hash (the Solana transaction ID = base58 of the signature). Pure computation — no network call.",
+      "description": "Solana: fetch the latest confirmed blockhash (base58) from the Solana JSON-RPC. Supported networks: mainnet, devnet.",
       "properties": {
-        "action": { "type": "string", "const": "reconstruct_sol_tx" },
-        "unsigned_tx_hex": { "type": "string", "description": "unsigned_tx_hex returned by build_sol_payload" },
-        "signature_json": { "type": "string", "description": "Full SignatureResponse JSON from the MPC contract (scheme=Ed25519)" }
+        "action": { "type": "string", "const": "sol_get_recent_blockhash" },
+        "network": { "type": "string", "enum": ["mainnet", "devnet"] }
       },
-      "required": ["action", "unsigned_tx_hex", "signature_json"],
+      "required": ["action", "network"],
       "additionalProperties": false
     },
     {
       "type": "object",
-      "description": "Broadcast a signed Solana transaction (from reconstruct_sol_tx) via the Solana JSON-RPC sendTransaction method.",
+      "description": "Solana: fetch the current priority fee (micro-lamports per compute unit) via getRecentPrioritizationFees, with a 5000 µL/CU floor. Supported networks: mainnet, devnet.",
       "properties": {
-        "action": { "type": "string", "const": "broadcast_sol" },
-        "network": { "type": "string", "enum": ["mainnet", "devnet"] },
-        "signed_tx_base64": { "type": "string", "description": "signed_tx_base64 returned by reconstruct_sol_tx" }
+        "action": { "type": "string", "const": "sol_get_priority_fee" },
+        "network": { "type": "string", "enum": ["mainnet", "devnet"] }
       },
-      "required": ["action", "network", "signed_tx_base64"],
+      "required": ["action", "network"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Solana: build an unsigned v0 message for a native SOL transfer. Pure — takes all network values pre-fetched. Returns `tx` (base64 of v0 message) and `mpc_payload` (same bytes as raw hex, no 0x prefix — paste directly into the near-cli-rs sign command's payload_v2.Eddsa field). Set priority_fee to 0 to omit ComputeBudget instructions.",
+      "properties": {
+        "action": { "type": "string", "const": "sol_build_transfer_mpc_payload" },
+        "from_pubkey": { "type": "string", "description": "Base58 Solana address (fee payer and only signer)" },
+        "to_pubkey": { "type": "string", "description": "Recipient Base58 Solana address" },
+        "lamports": { "type": "integer", "description": "Amount in lamports (output of sol_parse_value)" },
+        "recent_blockhash": { "type": "string", "description": "Base58 blockhash from sol_get_recent_blockhash" },
+        "priority_fee": { "type": "integer", "description": "Micro-lamports per compute unit from sol_get_priority_fee; use 0 to omit ComputeBudget" }
+      },
+      "required": ["action", "from_pubkey", "to_pubkey", "lamports", "recent_blockhash", "priority_fee"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Solana: combine an unsigned v0 message with the MPC Ed25519 SignatureResponse to produce signed_tx (base64) and tx_hash (base58 of signature = Solana tx ID). Pure computation — no network call.",
+      "properties": {
+        "action": { "type": "string", "const": "sol_attach_mpc_signature_to_tx" },
+        "tx": { "type": "string", "description": "base64 v0 message from sol_build_transfer_mpc_payload" },
+        "signature_json": { "type": "string", "description": "JSON-encoded SignatureResponse string from the MPC contract (Ed25519 scheme)" }
+      },
+      "required": ["action", "tx", "signature_json"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Solana: submit a signed transaction via sendTransaction. Returns tx_hash from the node. Supported networks: mainnet, devnet.",
+      "properties": {
+        "action": { "type": "string", "const": "sol_send_signed_tx" },
+        "network": { "type": "string", "enum": ["mainnet", "devnet"] },
+        "signed_tx": { "type": "string", "description": "base64 signed transaction from sol_attach_mpc_signature_to_tx" }
+      },
+      "required": ["action", "network", "signed_tx"],
       "additionalProperties": false
     }
   ]
@@ -281,9 +312,12 @@ Bitcoin and Solana use bundled actions. Available actions:\n\
 - build_btc_payload: build a P2WPKH unsigned tx; auto-fetches UTXOs and change address from pubkey_near\n\
 - reconstruct_btc_tx: combine unsigned Bitcoin tx + MPC signature → signed_tx_hex + tx_hash (no broadcast)\n\
 - broadcast_btc: submit a signed Bitcoin segwit tx to Esplora\n\
-- build_sol_payload: build a Solana v0 transaction message for a native SOL transfer; auto-fetches recent blockhash and priority fee; network: mainnet or devnet; accepts to + amount_sol\n\
-- reconstruct_sol_tx: combine unsigned Solana tx + MPC ed25519 signature → signed_tx_base64 + tx_hash (no broadcast)\n\
-- broadcast_sol: submit a signed Solana tx via sendTransaction; network: mainnet or devnet\
+- sol_parse_value: convert decimal-SOL string to lamports u64 (pure)\n\
+- sol_get_recent_blockhash: fetch latest confirmed blockhash (base58)\n\
+- sol_get_priority_fee: fetch current priority fee in micro-lamports/CU (5000 floor)\n\
+- sol_build_transfer_mpc_payload: build unsigned v0 SOL transfer; pure (takes all fees as inputs); returns tx (base64) + mpc_payload (raw hex, no 0x)\n\
+- sol_attach_mpc_signature_to_tx: combine unsigned tx + MPC Ed25519 signature into signed_tx (base64) + tx_hash (base58) (pure)\n\
+- sol_send_signed_tx: submit signed tx via sendTransaction; network: mainnet or devnet\
 ";
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
@@ -311,10 +345,13 @@ enum ActionInput {
     ReconstructBtcTx(bitcoin::ReconstructBtcInput),
     BroadcastBtc(bitcoin::BroadcastBtcInput),
 
-    // Solana
-    BuildSolPayload(solana::BuildSolPayloadInput),
-    ReconstructSolTx(solana::ReconstructSolTxInput),
-    BroadcastSol(solana::BroadcastSolInput),
+    // Solana (granular per-step actions; see src/solana/mod.rs)
+    SolParseValue(solana::ParseValueInput),
+    SolGetRecentBlockhash(solana::GetRecentBlockhashInput),
+    SolGetPriorityFee(solana::GetPriorityFeeInput),
+    SolBuildTransferMpcPayload(solana::BuildTransferInput),
+    SolAttachMpcSignatureToTx(solana::AttachSignatureInput),
+    SolSendSignedTx(solana::SendSignedTxInput),
 }
 
 fn do_http(
@@ -404,16 +441,28 @@ fn execute_inner(params: &str) -> Result<String, String> {
         }
 
         // ── Solana ───────────────────────────────────────────────────────────
-        ActionInput::BuildSolPayload(inp) => {
-            let out = solana::build_sol_payload(&inp, do_http)?;
+        ActionInput::SolParseValue(inp) => {
+            let out = solana::parse_value(&inp)?;
             serde_json::to_string(&out).map_err(|e| e.to_string())
         }
-        ActionInput::ReconstructSolTx(inp) => {
-            let out = solana::reconstruct_sol_tx(&inp)?;
+        ActionInput::SolGetRecentBlockhash(inp) => {
+            let out = solana::get_recent_blockhash(&inp, do_http)?;
             serde_json::to_string(&out).map_err(|e| e.to_string())
         }
-        ActionInput::BroadcastSol(inp) => {
-            let out = solana::broadcast_sol(&inp, do_http)?;
+        ActionInput::SolGetPriorityFee(inp) => {
+            let out = solana::get_priority_fee(&inp, do_http)?;
+            serde_json::to_string(&out).map_err(|e| e.to_string())
+        }
+        ActionInput::SolBuildTransferMpcPayload(inp) => {
+            let out = solana::build_transfer_mpc_payload(&inp)?;
+            serde_json::to_string(&out).map_err(|e| e.to_string())
+        }
+        ActionInput::SolAttachMpcSignatureToTx(inp) => {
+            let out = solana::attach_mpc_signature_to_tx(&inp)?;
+            serde_json::to_string(&out).map_err(|e| e.to_string())
+        }
+        ActionInput::SolSendSignedTx(inp) => {
+            let out = solana::send_signed_tx(&inp, do_http)?;
             serde_json::to_string(&out).map_err(|e| e.to_string())
         }
     }
